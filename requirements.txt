@@ -1,0 +1,6 @@
+streamlit
+langgraph
+langgraph-checkpoint-sqlite
+langchain-core
+langchain-openrouter
+python-dotenv
