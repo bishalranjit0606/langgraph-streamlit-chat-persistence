@@ -1,13 +1,12 @@
 import streamlit as st
 
-from langgraph_backend import chatbot, get_all_threads
+from langgraph_backend import chatbot, get_all_threads, make_config
 from langchain_core.messages import HumanMessage
-
-import uuid
+from langsmith import uuid7
 
 
 def generate_thread_id():
-    return str(uuid.uuid4())
+    return str(uuid7())
 
 
 # Initialize current thread
@@ -33,9 +32,7 @@ st.sidebar.write(
 
 
 def load_conversation(thread_id):
-    state = chatbot.get_state(
-        config={"configurable": {"thread_id": thread_id}}
-    )
+    state = chatbot.get_state(make_config(thread_id))
 
     messages = []
 
@@ -90,12 +87,8 @@ for thread_id in previous_threads:
         st.rerun()
 
 
-# LangGraph config
-CONFIG = {
-    "configurable": {
-        "thread_id": st.session_state["thread_id"]
-    }
-}
+# Same thread id goes to SQLite and to LangSmith.
+CONFIG = make_config(st.session_state["thread_id"])
 
 
 # Display previous messages

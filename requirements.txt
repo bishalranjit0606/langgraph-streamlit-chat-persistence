@@ -3,4 +3,6 @@ langgraph
 langgraph-checkpoint-sqlite
 langchain-core
 langchain-openrouter
+langchain-groq
+langsmith
 python-dotenv

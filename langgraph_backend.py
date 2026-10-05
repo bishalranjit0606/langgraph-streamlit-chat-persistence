@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated
 
 from langchain_core.messages import BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openrouter import ChatOpenRouter
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -12,25 +13,65 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+# Older LangChain names still work. Copy them to the current LangSmith names.
+if os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true":
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+if os.getenv("LANGCHAIN_API_KEY"):
+    os.environ.setdefault("LANGSMITH_API_KEY", os.environ["LANGCHAIN_API_KEY"])
+if os.getenv("LANGCHAIN_PROJECT"):
+    os.environ.setdefault("LANGSMITH_PROJECT", os.environ["LANGCHAIN_PROJECT"])
+if os.getenv("LANGCHAIN_ENDPOINT"):
+    os.environ.setdefault("LANGSMITH_ENDPOINT", os.environ["LANGCHAIN_ENDPOINT"])
+
+os.environ.setdefault("LANGSMITH_PROJECT", "langsmith-demo")
 
 
-llm = ChatOpenRouter(
-    model="openrouter/free",
-    temperature=0,
-    streaming=True
-)
+def _make_llm():
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if openrouter_key and openrouter_key != "your_openrouter_key_here":
+        return ChatOpenRouter(
+            model="openrouter/free",
+            temperature=0,
+            streaming=True,
+        )
+
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_key and groq_key != "your_groq_key_here":
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(
+            model="openai/gpt-oss-20b",
+            temperature=0,
+        )
+
+    raise RuntimeError(
+        "Add OPENROUTER_API_KEY or GROQ_API_KEY to .env before you start the chatbot."
+    )
+
+
+llm = _make_llm()
 
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-def chat_node(state: ChatState):
+def make_config(thread_id: str) -> dict:
+    # Same id for the saved chat and the LangSmith thread.
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"thread_id": thread_id},
+        "run_name": "chat",
+    }
+
+
+def chat_node(state: ChatState, config: RunnableConfig):
 
     messages = state["messages"]
 
-    response = llm.invoke(messages)
+    response = llm.invoke(messages, config)
 
     return {
         "messages": [response]

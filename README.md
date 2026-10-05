@@ -2,7 +2,7 @@
 
 A small Streamlit chatbot that keeps every conversation in a local SQLite file. You can start a new chat, close the app, and open an old chat again.
 
-The model is `openrouter/free` through [OpenRouter](https://openrouter.ai/).
+The chatbot uses OpenRouter when `OPENROUTER_API_KEY` is set. If that key is missing, it uses Groq.
 
 ## What is in this repo
 
@@ -10,7 +10,7 @@ The model is `openrouter/free` through [OpenRouter](https://openrouter.ai/).
 - `langgraph_backend.py` is the LangGraph app and the SQLite checkpointer.
 - `chatbot.db` is created next to the code when you run the app. It is not committed.
 
-Each chat has its own `thread_id`. LangGraph saves messages for that id in `chatbot.db`. The sidebar reads those ids and loads the old messages.
+Each chat has its own `thread_id`. LangGraph saves messages for that id in `chatbot.db`. The same id is sent on every model call, so LangSmith keeps that chat in one thread. The sidebar reads those ids and loads the old messages.
 
 ## Setup
 
@@ -22,19 +22,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy the example env file and put your OpenRouter key in it:
+Copy the example env file and add your keys:
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` should look like this:
+You need one model key and a LangSmith key:
 
-```
-OPENROUTER_API_KEY=your_openrouter_key_here
-```
+- `OPENROUTER_API_KEY` from [OpenRouter keys](https://openrouter.ai/keys), or `GROQ_API_KEY` from [Groq](https://console.groq.com/keys)
+- `LANGSMITH_API_KEY` from [LangSmith](https://smith.langchain.com/)
 
-Get a key from [OpenRouter keys](https://openrouter.ai/keys). Do not commit `.env`.
+`LANGSMITH_TRACING=true` sends each chat turn to the LangSmith project in `LANGSMITH_PROJECT`. Do not commit `.env`.
 
 ## Run
 
