@@ -23,12 +23,10 @@ if "message_history" not in st.session_state:
 st.sidebar.title("LangGraph Chatbot")
 
 
-# Show current thread ID
+# Show the first question as the chat title.
 st.sidebar.subheader("Current Conversation")
 
-st.sidebar.write(
-    st.session_state["thread_id"]
-)
+current_title = st.sidebar.empty()
 
 
 TOOL_LABELS = {
@@ -53,6 +51,29 @@ def message_text(content):
 
 def tool_label(name):
     return TOOL_LABELS.get(name, (name or "Tool").replace("_", " "))
+
+
+def short_title(text):
+    text = " ".join(text.split())
+    if len(text) <= 42:
+        return text
+    return text[:42].rstrip() + "..."
+
+
+def title_from_messages(messages):
+    for message in messages:
+        if message.get("role") == "user" and (message.get("content") or "").strip():
+            return short_title(message["content"])
+    return "New chat"
+
+
+def thread_title(thread_id):
+    if thread_id == st.session_state.get("thread_id"):
+        history = st.session_state.get("message_history") or []
+        if history:
+            return title_from_messages(history)
+
+    return title_from_messages(load_conversation(thread_id))
 
 
 def show_message(message):
@@ -145,8 +166,10 @@ previous_threads = [
 # Show previous conversations
 st.sidebar.subheader("Previous Conversations")
 
+current_title.write(thread_title(st.session_state["thread_id"]))
+
 for thread_id in previous_threads:
-    if st.sidebar.button(thread_id, key=thread_id):
+    if st.sidebar.button(thread_title(thread_id), key=thread_id):
         st.session_state["thread_id"] = thread_id
         st.session_state["message_history"] = load_conversation(thread_id)
 
@@ -175,6 +198,7 @@ if user_input:
             "content": user_input
         }
     )
+    current_title.write(title_from_messages(st.session_state["message_history"]))
 
     # Display user message
     with st.chat_message("user"):
