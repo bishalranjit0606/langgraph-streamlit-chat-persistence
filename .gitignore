@@ -15,6 +15,8 @@ env/
 chatbot.db
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # Streamlit
 .streamlit/secrets.toml

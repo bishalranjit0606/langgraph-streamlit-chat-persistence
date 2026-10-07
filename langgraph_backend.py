@@ -211,7 +211,17 @@ def chat_node(state: ChatState, config: RunnableConfig):
         "messages": [response]
     }
 
-db_path = os.path.join(os.path.dirname(__file__), "chatbot.db")
+def _chat_db_path() -> str:
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    # Community Cloud keeps the repo in /mount/src, and that folder is read-only.
+    if app_dir.startswith("/mount/src"):
+        data_dir = os.path.join(os.path.expanduser("~"), ".langgraph-chat")
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "chatbot.db")
+    return os.path.join(app_dir, "chatbot.db")
+
+
+db_path = _chat_db_path()
 
 # check_same_thread=False lets Streamlit use this connection
 conn = sqlite3.connect(db_path, check_same_thread=False)
