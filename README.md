@@ -4,6 +4,14 @@ A small Streamlit chatbot that keeps every conversation in a local SQLite file. 
 
 The chatbot uses OpenRouter when `OPENROUTER_API_KEY` is set. If that key is missing, it uses Groq.
 
+It can also use three tools:
+
+- DuckDuckGo search for news and current facts
+- latest stock price from Yahoo Finance
+- a calculator for arithmetic
+
+None of these tools need an API key.
+
 ## What is in this repo
 
 - `streamlitfe.py` is the chat page.

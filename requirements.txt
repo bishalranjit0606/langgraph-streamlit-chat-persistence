@@ -6,3 +6,4 @@ langchain-openrouter
 langchain-groq
 langsmith
 python-dotenv
+ddgs
