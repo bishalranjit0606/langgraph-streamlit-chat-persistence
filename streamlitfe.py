@@ -234,11 +234,13 @@ if user_input:
 
             label = tool_label(name)
             status = st.status(f"Using {label}...", state="running", expanded=True)
-            status.write(f"{label} is running.")
+            detail = status.empty()
+            detail.write(f"{label} is running.")
             running_tools[call_id or f"tool-{len(running_tools)}-{label}"] = {
                 "name": name,
                 "label": label,
                 "status": status,
+                "detail": detail,
                 "done": False,
             }
 
@@ -247,6 +249,8 @@ if user_input:
                 return
 
             item["done"] = True
+            if item.get("detail") is not None:
+                item["detail"].write(f"{item['label']} finished.")
             item["status"].update(
                 label=f"{item['label']} used",
                 state="complete",

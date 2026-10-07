@@ -140,38 +140,218 @@ def get_stock_price(symbol: str) -> str:
     return f"{name} ({ticker}) latest price is {price} {currency}.".strip()
 
 
+def _instant_answer(query):
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(
+        {
+            "q": query,
+            "format": "json",
+            "no_html": 1,
+            "skip_disambig": 1,
+        }
+    )
+    request = urllib.request.Request(url, headers={"User-Agent": "langgraph-chatbot"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    lines = []
+    abstract = (payload.get("AbstractText") or "").strip()
+    if abstract:
+        heading = (payload.get("Heading") or query).strip()
+        lines.append(f"{heading}: {abstract}")
+
+    topics = list(payload.get("RelatedTopics") or [])
+    added = 0
+    while topics and added < 4:
+        topic = topics.pop(0)
+        if not isinstance(topic, dict):
+            continue
+        topics = list(topic.get("Topics") or []) + topics
+        text = (topic.get("Text") or "").strip()
+        if text:
+            lines.append(text)
+            added += 1
+    return lines
+
+
+def _web_results(query):
+    from ddgs import DDGS
+
+    last_error = None
+    for kind in ("text", "news"):
+        for _attempt in range(2):
+            try:
+                with DDGS(timeout=20) as ddgs:
+                    if kind == "text":
+                        rows = ddgs.text(query, max_results=5, backend="duckduckgo") or []
+                    else:
+                        rows = ddgs.news(query, max_results=5, backend="duckduckgo") or []
+                if rows:
+                    return rows
+            except Exception as exc:
+                last_error = exc
+    if last_error and not last_error.__class__.__name__.endswith("Exception"):
+        raise last_error
+    return []
+
+
+def _wiki_facts(url):
+    marker = "/wiki/"
+    if "wikipedia.org" not in url or marker not in url:
+        return []
+
+    title = urllib.parse.unquote(url.split(marker, 1)[1].split("#", 1)[0].split("?", 1)[0])
+    if not title:
+        return []
+
+    api = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+        {
+            "action": "parse",
+            "page": title,
+            "prop": "wikitext",
+            "section": "0",
+            "format": "json",
+        }
+    )
+    request = urllib.request.Request(api, headers={"User-Agent": "langgraph-chatbot"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    wikitext = ((payload.get("parse") or {}).get("wikitext") or {}).get("*") or ""
+    wanted = {"gold", "silver", "bronze", "rank", "competitors", "sports"}
+    facts = []
+    for line in wikitext.splitlines():
+        if not line.startswith("|") or "=" not in line:
+            continue
+        key, value = line[1:].split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key in wanted and value:
+            facts.append(f"{key}: {value}")
+    return facts
+
+
+def _wikipedia_backup(query):
+    api = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": 2,
+            "format": "json",
+        }
+    )
+    request = urllib.request.Request(api, headers={"User-Agent": "langgraph-chatbot"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+
+    lines = []
+    for item in ((payload.get("query") or {}).get("search") or [])[:2]:
+        title = item.get("title") or ""
+        if not title:
+            continue
+        slug = urllib.parse.quote(title.replace(" ", "_"))
+        summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        summary_request = urllib.request.Request(
+            summary_url,
+            headers={"User-Agent": "langgraph-chatbot"},
+        )
+        extract = ""
+        try:
+            with urllib.request.urlopen(summary_request, timeout=15) as response:
+                extract = (json.load(response).get("extract") or "").strip()
+        except Exception:
+            extract = ""
+        try:
+            facts = _wiki_facts(f"https://en.wikipedia.org/wiki/{slug}")
+        except Exception:
+            facts = []
+        line = title
+        if extract:
+            line += f": {extract}"
+        if facts:
+            line += " (" + "; ".join(facts) + ")"
+        lines.append(line)
+    return lines
+
+
 @tool
 def duckduckgo_search(query: str) -> str:
     """Search the web with DuckDuckGo.
 
-    Use this for current events, news, and facts that change.
+    Use this for current events, news, office holders, sports results, and facts that change.
     Input should be a search query.
     """
-    from ddgs import DDGS
-
     query = query.strip()
     if not query:
         return "Give a search query."
 
-    try:
-        # Stay on DuckDuckGo. The auto backend can call Yahoo and time out.
-        with DDGS(timeout=15) as ddgs:
-            results = ddgs.news(query, max_results=5, backend="duckduckgo") or []
-            if not results:
-                results = ddgs.text(query, max_results=5, backend="duckduckgo") or []
-    except Exception as exc:
-        return f"Search failed. Please try again. ({type(exc).__name__})"
+    queries = [query]
+    simpler = query
+    for prefix in ("who is the ", "who is ", "what is the ", "what is ", "current "):
+        while simpler.lower().startswith(prefix):
+            simpler = simpler[len(prefix):].strip()
+    if simpler and simpler.lower() != query.lower():
+        queries.append(simpler)
 
-    if not results:
-        return "No search results found."
+    parts = []
+    instant = []
+    for one_query in queries:
+        try:
+            instant = _instant_answer(one_query)
+        except Exception:
+            instant = []
+        if instant:
+            break
+    if instant:
+        parts.append("Instant answer:\n" + "\n".join(instant))
 
-    lines = []
+    results = []
+    web_error = None
+    for one_query in queries:
+        try:
+            results = _web_results(one_query)
+        except Exception as exc:
+            results = []
+            web_error = exc
+        if results:
+            break
+    if web_error and not results:
+        parts.append(f"Web search failed ({type(web_error).__name__}).")
+
+    pages = []
+    wiki_notes = []
     for item in results[:5]:
         title = item.get("title") or ""
         body = item.get("body") or ""
-        source = item.get("source") or item.get("href") or ""
-        lines.append(f"{title}. {body} ({source})".strip())
-    return "\n".join(lines)
+        link = item.get("href") or item.get("url") or item.get("source") or ""
+        pages.append(f"{title}. {body} ({link})".strip())
+        if len(wiki_notes) < 2 and "wikipedia.org" in link:
+            try:
+                facts = _wiki_facts(link)
+            except Exception:
+                facts = []
+            if facts:
+                wiki_notes.append(f"{title}: " + "; ".join(facts))
+
+    if pages:
+        parts.append("Web results:\n" + "\n".join(pages))
+    if wiki_notes:
+        parts.append("Wikipedia facts:\n" + "\n".join(wiki_notes))
+
+    if not pages and not wiki_notes:
+        try:
+            backup = _wikipedia_backup(queries[-1])
+        except Exception:
+            backup = []
+        if backup:
+            parts.append("Wikipedia:\n" + "\n".join(backup))
+
+    if not parts:
+        return (
+            "Search failed. Tell the user you could not look this up. "
+            "Do not guess from older memory."
+        )
+    return "\n\n".join(parts)
 
 
 tools = [calculator, get_stock_price, duckduckgo_search]
@@ -180,10 +360,13 @@ llm_with_tools = llm.bind_tools(tools)
 SYSTEM_PROMPT = SystemMessage(
     content=(
         "You are a helpful chatbot. Answer normal questions directly. "
-        "Use duckduckgo_search for current events, news, and facts that change. "
+        "Use duckduckgo_search for current events, news, office holders, sports results, and facts that change. "
         "Use get_stock_price for the latest share price. Pass a ticker such as AAPL. "
         "Use calculator for arithmetic, including a follow-up like the cost of many shares. "
-        "After a tool runs, answer in a normal sentence."
+        "After a tool runs, answer from that tool result in a normal sentence. "
+        "Use only names, dates, and numbers that appear in the tool result. "
+        "Do not replace the tool result with older memory. "
+        "If the tool says the search failed, say you could not look it up."
     )
 )
 
