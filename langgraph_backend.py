@@ -453,36 +453,50 @@ def _iter_async(agen_factory):
         yield value
 
 
-def _mcp_client():
+def _mcp_servers():
     # Use this project's Python so the MCP servers run inside the same virtual env.
     python = sys.executable
-    return MultiServerMCPClient(
-        {
-            "time": {
-                "command": python,
-                "args": ["-m", "mcp_server_time", "--local-timezone=Asia/Kathmandu"],
-                "transport": "stdio",
-            },
-            "weather": {
-                "command": python,
-                "args": ["-m", "mcp_weather_server"],
-                "transport": "stdio",
-            },
-            "sportscore": {
-                "command": shutil.which("npx") or "npx",
-                "args": ["-y", "sportscore-mcp"],
-                "transport": "stdio",
-            },
+    servers = {
+        "time": {
+            "command": python,
+            "args": ["-m", "mcp_server_time", "--local-timezone=Asia/Kathmandu"],
+            "transport": "stdio",
         },
-        tool_name_prefix=True,
-    )
+        "weather": {
+            "command": python,
+            "args": ["-m", "mcp_weather_server"],
+            "transport": "stdio",
+        },
+    }
+    # SportScore runs through Node. Streamlit Cloud has no npx, so skip it there.
+    npx = shutil.which("npx")
+    if npx:
+        servers["sportscore"] = {
+            "command": npx,
+            "args": ["-y", "sportscore-mcp"],
+            "transport": "stdio",
+        }
+    return servers
+
+
+async def _load_mcp_tools():
+    global _mcp
+
+    servers = _mcp_servers()
+    _mcp = MultiServerMCPClient(servers, tool_name_prefix=True)
+    found = []
+    for name in servers:
+        try:
+            found.extend(await _mcp.get_tools(server_name=name))
+        except Exception as exc:
+            print(f"Skipped MCP server {name}: {exc}", file=sys.stderr)
+    return found
 
 
 async def _open_chatbot():
-    global llm_with_tools, tools, _mcp
+    global llm_with_tools, tools
 
-    _mcp = _mcp_client()
-    mcp_tools = await _mcp.get_tools()
+    mcp_tools = await _load_mcp_tools()
     tools = [calculator, get_stock_price, duckduckgo_search, *mcp_tools]
     llm_with_tools = llm.bind_tools(tools)
 
