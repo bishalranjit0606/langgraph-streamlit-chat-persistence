@@ -353,12 +353,58 @@ async def duckduckgo_search(query: str) -> str:
     return "\n\n".join(parts)
 
 
-tools = [calculator, get_stock_price, duckduckgo_search]
+@tool
+async def search_constitution(question: str) -> str:
+    """Search the Constitution of Nepal.
+
+    Use this for questions about the Constitution of Nepal.
+    Pass a short search phrase, such as official language of Nepal
+    or national animal of Nepal.
+    """
+    from constitution_rag import format_passages, retrieve
+
+    question = question.strip()
+    if not question:
+        return "Give a question about the Constitution of Nepal."
+
+    search_text = question.lower()
+    for phrase in (
+        "according to the constitution of nepal",
+        "according to the constitution",
+        "in the constitution of nepal",
+        "in the constitution",
+        "of the constitution",
+    ):
+        search_text = search_text.replace(phrase, " ")
+    search_text = " ".join(search_text.split()).strip(" ?.")
+    search_text = search_text or question
+
+    try:
+        docs = await asyncio.to_thread(retrieve, search_text)
+    except Exception as exc:
+        return f"Could not search the constitution: {exc}"
+
+    if not docs:
+        return "No matching text found in the Constitution of Nepal."
+
+    return (
+        "Passages from the Constitution of Nepal. "
+        "Answer only from these passages. "
+        "If they do not contain the answer, say you could not find it in the constitution.\n\n"
+        + format_passages(docs)
+    )
+
+
+tools = [calculator, get_stock_price, duckduckgo_search, search_constitution]
 llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM_PROMPT = SystemMessage(
     content=(
-        "You are a helpful chatbot. Answer normal questions directly. "
+        "You are a helpful chatbot. Decide what each question needs. "
+        "Answer normal questions directly, with no tool. "
+        "Use search_constitution for questions about the Constitution of Nepal, "
+        "including its articles, rights, president, official language, national symbols, and government structure. "
+        "Do not use web search for the constitution. "
         "Use duckduckgo_search for current events, news, office holders, sports results, and facts that change. "
         "Use get_stock_price for the latest share price. Pass a ticker such as AAPL. "
         "Use calculator for arithmetic, including a follow-up like the cost of many shares. "
@@ -369,6 +415,7 @@ SYSTEM_PROMPT = SystemMessage(
         "Use the SportScore MCP tools for live and recent football, cricket, basketball, and tennis scores, fixtures, and standings. "
         "The sport argument is football, cricket, basketball, or tennis. "
         "After a tool runs, answer from that tool result in a normal sentence. "
+        "When search_constitution was used, mention the article number when the passage includes one. "
         "Use only names, dates, and numbers that appear in the tool result. "
         "Do not replace the tool result with older memory. "
         "If the tool says the search failed, say you could not look it up."
@@ -497,7 +544,7 @@ async def _open_chatbot():
     global llm_with_tools, tools
 
     mcp_tools = await _load_mcp_tools()
-    tools = [calculator, get_stock_price, duckduckgo_search, *mcp_tools]
+    tools = [calculator, get_stock_price, duckduckgo_search, search_constitution, *mcp_tools]
     llm_with_tools = llm.bind_tools(tools)
 
     conn = await aiosqlite.connect(db_path)

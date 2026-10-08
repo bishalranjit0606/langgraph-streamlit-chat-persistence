@@ -11,3 +11,7 @@ ddgs
 langchain-mcp-adapters
 mcp-server-time
 mcp-weather-server
+faiss-cpu
+pypdf
+langchain-huggingface
+sentence-transformers

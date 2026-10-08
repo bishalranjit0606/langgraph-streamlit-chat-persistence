@@ -4,13 +4,17 @@ A small Streamlit chatbot that keeps every conversation in a local SQLite file. 
 
 The chatbot uses OpenRouter when `OPENROUTER_API_KEY` is set. If that key is missing, it uses Groq.
 
-It can also use three tools:
+The model decides what each question needs. It can answer directly, or it can use a tool:
 
+- Constitution search for the Constitution of Nepal PDF
 - DuckDuckGo search for news and current facts
 - latest stock price from Yahoo Finance
 - a calculator for arithmetic
+- time, weather, and sports tools when those MCP servers are available
 
-None of these tools need an API key.
+The constitution tool is traditional RAG. The PDF is split into short chunks, embedded with `sentence-transformers/all-MiniLM-L6-v2`, and stored in FAISS. The first constitution question builds `faiss_constitution/` next to the code. Later questions reuse that index. The model then answers from the retrieved passages.
+
+The calculator, stock price, and web search do not need an API key.
 
 ## What is in this repo
 

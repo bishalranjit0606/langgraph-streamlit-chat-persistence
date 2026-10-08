@@ -33,6 +33,7 @@ TOOL_LABELS = {
     "duckduckgo_search": "DuckDuckGo search",
     "get_stock_price": "Stock price",
     "calculator": "Calculator",
+    "search_constitution": "Constitution search",
     "time_get_current_time": "Time",
     "time_convert_time": "Time conversion",
     "weather_get_current_weather": "Weather",
@@ -163,11 +164,7 @@ def load_conversation(thread_id):
 
 # Start new chat
 if st.sidebar.button("Start New Chat"):
-
-    # Generate new thread
     st.session_state["thread_id"] = generate_thread_id()
-
-    # Clear UI message history
     st.session_state["message_history"] = []
 
     st.rerun()

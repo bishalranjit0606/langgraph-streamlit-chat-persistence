@@ -13,6 +13,9 @@ env/
 
 # Local chat history
 chatbot.db
+
+# Built on first Constitution RAG run
+faiss_constitution/
 *.db
 *.db-journal
 *.db-wal
