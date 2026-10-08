@@ -314,18 +314,16 @@ if user_input:
                 for call in getattr(message_chunk, "tool_call_chunks", None) or []:
                     if call.get("name"):
                         start_tool(call.get("name"), call.get("id"))
-                    if call.get("name") or call.get("id"):
-                        break
-                else:
-                    content = message_text(message_chunk.content)
-                    if content:
-                        answer += content
-                        show_answer(answer)
+
+                content = message_text(message_chunk.content)
+                if content:
+                    answer += content
+                    show_answer(answer)
 
             for item in running_tools.values():
                 finish_tool(item)
 
-            if not answer:
+            if not answer.strip():
                 answer = "I could not finish that reply. Please try again."
                 show_answer(answer)
         except Exception:

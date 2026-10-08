@@ -18,6 +18,7 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import urllib.parse
 
 import aiosqlite
@@ -184,22 +185,27 @@ async def _instant_answer(query):
 def _web_results(query):
     from ddgs import DDGS
 
-    last_error = None
-    for kind in ("text", "news"):
-        for _attempt in range(2):
-            try:
-                with DDGS(timeout=20) as ddgs:
-                    if kind == "text":
-                        rows = ddgs.text(query, max_results=5, backend="duckduckgo") or []
-                    else:
-                        rows = ddgs.news(query, max_results=5, backend="duckduckgo") or []
-                if rows:
-                    return rows
-            except Exception as exc:
-                last_error = exc
-    if last_error and not last_error.__class__.__name__.endswith("Exception"):
-        raise last_error
-    return []
+    # One short try. DuckDuckGo often stalls from a hosted server, and the
+    # search library waits for that stall even after its own timeout.
+    try:
+        with DDGS(timeout=6) as ddgs:
+            return ddgs.text(query, max_results=5, backend="duckduckgo") or []
+    except Exception:
+        return []
+
+
+async def _web_results_capped(query, timeout=8):
+    found = {}
+
+    def run():
+        found["rows"] = _web_results(query)
+
+    worker = threading.Thread(target=run, name="duckduckgo-search", daemon=True)
+    worker.start()
+    deadline = time.monotonic() + timeout
+    while worker.is_alive() and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+    return found.get("rows") or []
 
 
 async def _wiki_facts(url):
@@ -223,7 +229,16 @@ async def _wiki_facts(url):
     payload = await _get_json(api)
 
     wikitext = ((payload.get("parse") or {}).get("wikitext") or {}).get("*") or ""
-    wanted = {"gold", "silver", "bronze", "rank", "competitors", "sports"}
+    wanted = {
+        "gold",
+        "silver",
+        "bronze",
+        "rank",
+        "competitors",
+        "sports",
+        "incumbent",
+        "incumbent_since",
+    }
     facts = []
     for line in wikitext.splitlines():
         if not line.startswith("|") or "=" not in line:
@@ -296,7 +311,7 @@ async def duckduckgo_search(query: str) -> str:
     instant = []
     for one_query in queries:
         try:
-            instant = await _instant_answer(one_query)
+            instant = await asyncio.wait_for(_instant_answer(one_query), 8)
         except Exception:
             instant = []
         if instant:
@@ -304,18 +319,19 @@ async def duckduckgo_search(query: str) -> str:
     if instant:
         parts.append("Instant answer:\n" + "\n".join(instant))
 
-    results = []
-    web_error = None
-    for one_query in queries:
+    # Wikipedia answers office-holder questions when DuckDuckGo is blocked.
+    if not parts:
         try:
-            results = await asyncio.to_thread(_web_results, one_query)
-        except Exception as exc:
-            results = []
-            web_error = exc
-        if results:
-            break
-    if web_error and not results:
-        parts.append(f"Web search failed ({type(web_error).__name__}).")
+            backup = await asyncio.wait_for(_wikipedia_backup(queries[-1]), 10)
+        except Exception:
+            backup = []
+        if backup:
+            parts.append("Wikipedia:\n" + "\n".join(backup))
+
+    # Skip the slow web search once another source already has an answer.
+    results = []
+    if not parts:
+        results = await _web_results_capped(queries[0])
 
     pages = []
     wiki_notes = []
@@ -326,7 +342,7 @@ async def duckduckgo_search(query: str) -> str:
         pages.append(f"{title}. {body} ({link})".strip())
         if len(wiki_notes) < 2 and "wikipedia.org" in link:
             try:
-                facts = await _wiki_facts(link)
+                facts = await asyncio.wait_for(_wiki_facts(link), 8)
             except Exception:
                 facts = []
             if facts:
@@ -336,14 +352,6 @@ async def duckduckgo_search(query: str) -> str:
         parts.append("Web results:\n" + "\n".join(pages))
     if wiki_notes:
         parts.append("Wikipedia facts:\n" + "\n".join(wiki_notes))
-
-    if not pages and not wiki_notes:
-        try:
-            backup = await _wikipedia_backup(queries[-1])
-        except Exception:
-            backup = []
-        if backup:
-            parts.append("Wikipedia:\n" + "\n".join(backup))
 
     if not parts:
         return (
