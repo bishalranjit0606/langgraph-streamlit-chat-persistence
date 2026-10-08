@@ -1,9 +1,13 @@
 streamlit
 langgraph
 langgraph-checkpoint-sqlite
+aiosqlite
 langchain-core
 langchain-openrouter
 langchain-groq
 langsmith
 python-dotenv
 ddgs
+langchain-mcp-adapters
+mcp-server-time
+mcp-weather-server

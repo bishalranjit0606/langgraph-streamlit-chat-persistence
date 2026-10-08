@@ -6,19 +6,24 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openrouter import ChatOpenRouter
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 import ast
-import json
+import asyncio
 import operator
-import sqlite3
 import os
+import queue
+import shutil
+import sys
+import threading
 import urllib.parse
-import urllib.request
 
+import aiosqlite
+import httpx
 from dotenv import load_dotenv
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -87,7 +92,7 @@ def _calc_eval(node):
 
 
 @tool
-def calculator(expression: str) -> str:
+async def calculator(expression: str) -> str:
     """Calculate a math expression.
 
     Use this for arithmetic, including the cost of many shares.
@@ -103,8 +108,15 @@ def calculator(expression: str) -> str:
     return str(value)
 
 
+async def _get_json(url: str, timeout: float = 15, user_agent: str = "langgraph-chatbot"):
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        response = await client.get(url, headers={"User-Agent": user_agent})
+        response.raise_for_status()
+        return response.json()
+
+
 @tool
-def get_stock_price(symbol: str) -> str:
+async def get_stock_price(symbol: str) -> str:
     """Get the latest stock price for a ticker symbol.
 
     Use this when the user asks for a share price or stock quote.
@@ -118,11 +130,9 @@ def get_stock_price(symbol: str) -> str:
         "https://query1.finance.yahoo.com/v8/finance/chart/"
         f"{urllib.parse.quote(ticker)}?interval=1d&range=1d"
     )
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = json.load(response)
+        payload = await _get_json(url, timeout=10, user_agent="Mozilla/5.0")
     except Exception as exc:
         return f"Could not get the price for {ticker}: {exc}"
 
@@ -140,7 +150,7 @@ def get_stock_price(symbol: str) -> str:
     return f"{name} ({ticker}) latest price is {price} {currency}.".strip()
 
 
-def _instant_answer(query):
+async def _instant_answer(query):
     url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode(
         {
             "q": query,
@@ -149,9 +159,7 @@ def _instant_answer(query):
             "skip_disambig": 1,
         }
     )
-    request = urllib.request.Request(url, headers={"User-Agent": "langgraph-chatbot"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.load(response)
+    payload = await _get_json(url)
 
     lines = []
     abstract = (payload.get("AbstractText") or "").strip()
@@ -194,7 +202,7 @@ def _web_results(query):
     return []
 
 
-def _wiki_facts(url):
+async def _wiki_facts(url):
     marker = "/wiki/"
     if "wikipedia.org" not in url or marker not in url:
         return []
@@ -212,9 +220,7 @@ def _wiki_facts(url):
             "format": "json",
         }
     )
-    request = urllib.request.Request(api, headers={"User-Agent": "langgraph-chatbot"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.load(response)
+    payload = await _get_json(api)
 
     wikitext = ((payload.get("parse") or {}).get("wikitext") or {}).get("*") or ""
     wanted = {"gold", "silver", "bronze", "rank", "competitors", "sports"}
@@ -230,7 +236,7 @@ def _wiki_facts(url):
     return facts
 
 
-def _wikipedia_backup(query):
+async def _wikipedia_backup(query):
     api = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
         {
             "action": "query",
@@ -240,9 +246,7 @@ def _wikipedia_backup(query):
             "format": "json",
         }
     )
-    request = urllib.request.Request(api, headers={"User-Agent": "langgraph-chatbot"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.load(response)
+    payload = await _get_json(api)
 
     lines = []
     for item in ((payload.get("query") or {}).get("search") or [])[:2]:
@@ -251,18 +255,13 @@ def _wikipedia_backup(query):
             continue
         slug = urllib.parse.quote(title.replace(" ", "_"))
         summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
-        summary_request = urllib.request.Request(
-            summary_url,
-            headers={"User-Agent": "langgraph-chatbot"},
-        )
         extract = ""
         try:
-            with urllib.request.urlopen(summary_request, timeout=15) as response:
-                extract = (json.load(response).get("extract") or "").strip()
+            extract = ((await _get_json(summary_url)).get("extract") or "").strip()
         except Exception:
             extract = ""
         try:
-            facts = _wiki_facts(f"https://en.wikipedia.org/wiki/{slug}")
+            facts = await _wiki_facts(f"https://en.wikipedia.org/wiki/{slug}")
         except Exception:
             facts = []
         line = title
@@ -275,7 +274,7 @@ def _wikipedia_backup(query):
 
 
 @tool
-def duckduckgo_search(query: str) -> str:
+async def duckduckgo_search(query: str) -> str:
     """Search the web with DuckDuckGo.
 
     Use this for current events, news, office holders, sports results, and facts that change.
@@ -297,7 +296,7 @@ def duckduckgo_search(query: str) -> str:
     instant = []
     for one_query in queries:
         try:
-            instant = _instant_answer(one_query)
+            instant = await _instant_answer(one_query)
         except Exception:
             instant = []
         if instant:
@@ -309,7 +308,7 @@ def duckduckgo_search(query: str) -> str:
     web_error = None
     for one_query in queries:
         try:
-            results = _web_results(one_query)
+            results = await asyncio.to_thread(_web_results, one_query)
         except Exception as exc:
             results = []
             web_error = exc
@@ -327,7 +326,7 @@ def duckduckgo_search(query: str) -> str:
         pages.append(f"{title}. {body} ({link})".strip())
         if len(wiki_notes) < 2 and "wikipedia.org" in link:
             try:
-                facts = _wiki_facts(link)
+                facts = await _wiki_facts(link)
             except Exception:
                 facts = []
             if facts:
@@ -340,7 +339,7 @@ def duckduckgo_search(query: str) -> str:
 
     if not pages and not wiki_notes:
         try:
-            backup = _wikipedia_backup(queries[-1])
+            backup = await _wikipedia_backup(queries[-1])
         except Exception:
             backup = []
         if backup:
@@ -363,6 +362,12 @@ SYSTEM_PROMPT = SystemMessage(
         "Use duckduckgo_search for current events, news, office holders, sports results, and facts that change. "
         "Use get_stock_price for the latest share price. Pass a ticker such as AAPL. "
         "Use calculator for arithmetic, including a follow-up like the cost of many shares. "
+        "Use the time MCP tools for the current time and for converting time between timezones. "
+        "Nepal's timezone is Asia/Kathmandu. "
+        "Use the weather MCP tools for current weather, a forecast, and air quality. "
+        "Pass a city name such as Kathmandu. "
+        "Use the SportScore MCP tools for live and recent football, cricket, basketball, and tennis scores, fixtures, and standings. "
+        "The sport argument is football, cricket, basketball, or tennis. "
         "After a tool runs, answer from that tool result in a normal sentence. "
         "Use only names, dates, and numbers that appear in the tool result. "
         "Do not replace the tool result with older memory. "
@@ -384,11 +389,11 @@ def make_config(thread_id: str) -> dict:
     }
 
 
-def chat_node(state: ChatState, config: RunnableConfig):
+async def chat_node(state: ChatState, config: RunnableConfig):
 
     messages = [SYSTEM_PROMPT, *state["messages"]]
 
-    response = llm_with_tools.invoke(messages, config)
+    response = await llm_with_tools.ainvoke(messages, config)
 
     return {
         "messages": [response]
@@ -406,36 +411,123 @@ def _chat_db_path() -> str:
 
 db_path = _chat_db_path()
 
-# check_same_thread=False lets Streamlit use this connection
-conn = sqlite3.connect(db_path, check_same_thread=False)
+_loop = asyncio.new_event_loop()
 
-checkpointer = SqliteSaver(conn)
+
+_loop_ready = threading.Event()
+
+
+def _run_loop():
+    asyncio.set_event_loop(_loop)
+    _loop.call_soon(_loop_ready.set)
+    _loop.run_forever()
+
+
+threading.Thread(target=_run_loop, name="langgraph-async", daemon=True).start()
+_loop_ready.wait()
+
+
+def _run(coro):
+    return asyncio.run_coroutine_threadsafe(coro, _loop).result()
+
+
+def _iter_async(agen_factory):
+    events = queue.Queue()
+
+    async def produce():
+        try:
+            async for item in agen_factory():
+                events.put(("item", item))
+        except Exception as exc:
+            events.put(("error", exc))
+        else:
+            events.put(("done", None))
+
+    asyncio.run_coroutine_threadsafe(produce(), _loop)
+    while True:
+        kind, value = events.get()
+        if kind == "done":
+            break
+        if kind == "error":
+            raise value
+        yield value
+
+
+def _mcp_client():
+    # Use this project's Python so the MCP servers run inside the same virtual env.
+    python = sys.executable
+    return MultiServerMCPClient(
+        {
+            "time": {
+                "command": python,
+                "args": ["-m", "mcp_server_time", "--local-timezone=Asia/Kathmandu"],
+                "transport": "stdio",
+            },
+            "weather": {
+                "command": python,
+                "args": ["-m", "mcp_weather_server"],
+                "transport": "stdio",
+            },
+            "sportscore": {
+                "command": shutil.which("npx") or "npx",
+                "args": ["-y", "sportscore-mcp"],
+                "transport": "stdio",
+            },
+        },
+        tool_name_prefix=True,
+    )
+
+
+async def _open_chatbot():
+    global llm_with_tools, tools, _mcp
+
+    _mcp = _mcp_client()
+    mcp_tools = await _mcp.get_tools()
+    tools = [calculator, get_stock_price, duckduckgo_search, *mcp_tools]
+    llm_with_tools = llm.bind_tools(tools)
+
+    conn = await aiosqlite.connect(db_path)
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+
+    graph = StateGraph(ChatState)
+    graph.add_node("chat_node", chat_node)
+    graph.add_node("tools", ToolNode(tools, handle_tool_errors=True))
+    graph.add_edge(START, "chat_node")
+    graph.add_conditional_edges("chat_node", tools_condition)
+    graph.add_edge("tools", "chat_node")
+    return graph.compile(checkpointer=saver), saver
+
+
+_compiled, checkpointer = _run(_open_chatbot())
+
+
+class _Chatbot:
+    # Streamlit stays synchronous. These methods run the async graph.
+
+    def stream(self, inputs, config, stream_mode="messages"):
+        return _iter_async(
+            lambda: _compiled.astream(inputs, config, stream_mode=stream_mode)
+        )
+
+    def get_state(self, config):
+        return _run(_compiled.aget_state(config))
+
+
+chatbot = _Chatbot()
 
 
 def get_all_threads():
-    query = """
-        SELECT thread_id
-        FROM checkpoints
-        GROUP BY thread_id
-        ORDER BY MAX(checkpoint_id) DESC
-    """
+    async def _threads():
+        await checkpointer.setup()
+        query = """
+            SELECT thread_id
+            FROM checkpoints
+            GROUP BY thread_id
+            ORDER BY MAX(checkpoint_id) DESC
+        """
+        async with checkpointer.conn.execute(query) as cursor:
+            rows = await cursor.fetchall()
+        return [row[0] for row in rows]
 
-    with checkpointer.cursor(transaction=False) as cur:
-        cur.execute(query)
-        return [row[0] for row in cur.fetchall()] 
-
-
-
-
-graph = StateGraph(ChatState)
-
-graph.add_node("chat_node", chat_node)
-graph.add_node("tools", ToolNode(tools, handle_tool_errors=True))
-
-graph.add_edge(START, "chat_node")
-graph.add_conditional_edges("chat_node", tools_condition)
-graph.add_edge("tools", "chat_node")
-
-chatbot = graph.compile(
-    checkpointer=checkpointer
-)
+    return _run(_threads())
