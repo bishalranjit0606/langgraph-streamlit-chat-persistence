@@ -1,14 +1,14 @@
-from langgraph.graph import StateGraph, START
+from langgraph.graph import END, START, StateGraph
 from typing import TypedDict, Annotated
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openrouter import ChatOpenRouter
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import tools_condition
 
 import ast
 import asyncio
@@ -361,6 +361,20 @@ async def duckduckgo_search(query: str) -> str:
     return "\n\n".join(parts)
 
 
+def _constitution_query(question: str) -> str:
+    search_text = question.lower()
+    for phrase in (
+        "according to the constitution of nepal",
+        "according to the constitution",
+        "in the constitution of nepal",
+        "in the constitution",
+        "of the constitution",
+    ):
+        search_text = search_text.replace(phrase, " ")
+    search_text = " ".join(search_text.split()).strip(" ?.")
+    return search_text or question
+
+
 @tool
 async def search_constitution(question: str) -> str:
     """Search the Constitution of Nepal.
@@ -375,20 +389,8 @@ async def search_constitution(question: str) -> str:
     if not question:
         return "Give a question about the Constitution of Nepal."
 
-    search_text = question.lower()
-    for phrase in (
-        "according to the constitution of nepal",
-        "according to the constitution",
-        "in the constitution of nepal",
-        "in the constitution",
-        "of the constitution",
-    ):
-        search_text = search_text.replace(phrase, " ")
-    search_text = " ".join(search_text.split()).strip(" ?.")
-    search_text = search_text or question
-
     try:
-        docs = await asyncio.to_thread(retrieve, search_text)
+        docs = await asyncio.to_thread(retrieve, _constitution_query(question))
     except Exception as exc:
         return f"Could not search the constitution: {exc}"
 
@@ -404,55 +406,228 @@ async def search_constitution(question: str) -> str:
 
 
 tools = [calculator, get_stock_price, duckduckgo_search, search_constitution]
-llm_with_tools = llm.bind_tools(tools)
 
-SYSTEM_PROMPT = SystemMessage(
-    content=(
-        "You are a helpful chatbot. Decide what each question needs. "
-        "Answer normal questions directly, with no tool. "
-        "Use search_constitution for questions about the Constitution of Nepal, "
-        "including its articles, rights, president, official language, national symbols, and government structure. "
-        "Do not use web search for the constitution. "
-        "Use duckduckgo_search for current events, news, office holders, sports results, and facts that change. "
-        "Use get_stock_price for the latest share price. Pass a ticker such as AAPL. "
-        "Use calculator for arithmetic, including a follow-up like the cost of many shares. "
-        "Use the time MCP tools for the current time and for converting time between timezones. "
-        "Nepal's timezone is Asia/Kathmandu. "
-        "Use the weather MCP tools for current weather, a forecast, and air quality. "
-        "Pass a city name such as Kathmandu. "
-        "Use the SportScore MCP tools for live and recent football, cricket, basketball, and tennis scores, fixtures, and standings. "
-        "The sport argument is football, cricket, basketball, or tennis. "
+
+def _message_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part if isinstance(part, str) else (part.get("text") or "")
+            for part in content
+            if isinstance(part, (str, dict))
+        )
+    return str(content or "")
+
+
+def _enabled_names(config: RunnableConfig) -> set[str] | None:
+    raw = ((config or {}).get("configurable") or {}).get("enabled_tools")
+    if raw is None:
+        return None
+    return {str(name) for name in raw}
+
+
+def _selected_tools(config: RunnableConfig):
+    enabled = _enabled_names(config)
+    if enabled is None:
+        return list(tools)
+    return [item for item in tools if item.name in enabled]
+
+
+def _general_prompt(enabled: set[str]) -> str:
+    lines = [
+        "You are a helpful chatbot. Decide what each question needs.",
+        "Answer normal questions directly, with no tool.",
+    ]
+    if "search_constitution" in enabled:
+        lines.append(
+            "Use search_constitution for questions about the Constitution of Nepal, "
+            "including its articles, rights, president, official language, national symbols, and government structure. "
+            "Do not use web search for the constitution."
+        )
+    if "duckduckgo_search" in enabled:
+        lines.append(
+            "Use duckduckgo_search for current events, news, office holders, sports results, and facts that change."
+        )
+    if "get_stock_price" in enabled:
+        lines.append(
+            "Use get_stock_price for the latest share price. Pass a ticker such as AAPL."
+        )
+    if "calculator" in enabled:
+        lines.append(
+            "Use calculator for arithmetic, including a follow-up like the cost of many shares."
+        )
+    if any(name.startswith("time_") for name in enabled):
+        lines.append(
+            "Use the time MCP tools for the current time and for converting time between timezones. "
+            "Nepal's timezone is Asia/Kathmandu."
+        )
+    if any(name.startswith("weather_") for name in enabled):
+        lines.append(
+            "Use the weather MCP tools for current weather, a forecast, and air quality. "
+            "Pass a city name such as Kathmandu."
+        )
+    if any(name.startswith("sportscore_") for name in enabled):
+        lines.append(
+            "Use the SportScore MCP tools for live and recent football, cricket, basketball, and tennis scores, fixtures, and standings. "
+            "The sport argument is football, cricket, basketball, or tennis."
+        )
+    lines.append(
         "After a tool runs, answer from that tool result in a normal sentence. "
         "When search_constitution was used, mention the article number when the passage includes one. "
         "Use only names, dates, and numbers that appear in the tool result. "
         "Do not replace the tool result with older memory. "
-        "If the tool says the search failed, say you could not look it up."
+        "If the tool says the search failed, say you could not look it up. "
+        "Call only a tool that is available."
     )
-)
+    return " ".join(lines)
 
 
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-def make_config(thread_id: str) -> dict:
+def make_config(
+    thread_id: str,
+    mode: str | None = None,
+    enabled_tools: list[str] | None = None,
+) -> dict:
     # Same id for the saved chat and the LangSmith thread.
+    configurable = {"thread_id": thread_id}
+    metadata = {"thread_id": thread_id}
+    if mode:
+        configurable["mode"] = mode
+        metadata["mode"] = mode
+    if enabled_tools is not None:
+        configurable["enabled_tools"] = list(enabled_tools)
     return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": {"thread_id": thread_id},
+        "configurable": configurable,
+        "metadata": metadata,
         "run_name": "chat",
     }
 
 
+def tool_groups():
+    loaded = [item.name for item in tools]
+    return [
+        ("Calculator", [name for name in loaded if name == "calculator"]),
+        ("Web search", [name for name in loaded if name == "duckduckgo_search"]),
+        ("Stock price", [name for name in loaded if name == "get_stock_price"]),
+        ("Constitution search", [name for name in loaded if name == "search_constitution"]),
+        ("Time", [name for name in loaded if name.startswith("time_")]),
+        ("Weather", [name for name in loaded if name.startswith("weather_")]),
+        ("Sports", [name for name in loaded if name.startswith("sportscore_")]),
+    ]
+
+
+def route_turn(state: ChatState, config: RunnableConfig):
+    mode = ((config or {}).get("configurable") or {}).get("mode") or "general"
+    if mode == "rag":
+        return "rag_node"
+    return "chat_node"
+
+
 async def chat_node(state: ChatState, config: RunnableConfig):
+    selected = _selected_tools(config)
+    enabled = {item.name for item in selected}
+    model = llm.bind_tools(selected) if selected else llm
+    messages = [SystemMessage(content=_general_prompt(enabled)), *state["messages"]]
+    response = await model.ainvoke(messages, config)
+    return {"messages": [response]}
 
-    messages = [SYSTEM_PROMPT, *state["messages"]]
 
-    response = await llm_with_tools.ainvoke(messages, config)
+async def rag_node(state: ChatState, config: RunnableConfig):
+    from constitution_rag import format_passages, retrieve
 
-    return {
-        "messages": [response]
-    }
+    question = ""
+    for message in reversed(state["messages"]):
+        if getattr(message, "type", "") == "human":
+            question = _message_text(message.content).strip()
+            break
+
+    try:
+        docs = await asyncio.to_thread(retrieve, _constitution_query(question))
+    except Exception as exc:
+        passages = f"Could not search the constitution: {exc}"
+    else:
+        passages = (
+            format_passages(docs)
+            if docs
+            else "No matching text found in the Constitution of Nepal."
+        )
+
+    prompt = SystemMessage(
+        content=(
+            "You answer questions about the Constitution of Nepal. "
+            "Use only the passages below. "
+            "If the passages do not contain the answer, say it was not found in the constitution. "
+            "Do not use outside knowledge or other tools. "
+            "Mention the article number when a passage includes one.\n\n"
+            + passages
+        )
+    )
+    response = await llm.ainvoke([prompt, *state["messages"]], config)
+    return {"messages": [response]}
+
+
+def _tool_result_text(result) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        parts = []
+        for item in result:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(result)
+
+
+async def tools_node(state: ChatState, config: RunnableConfig):
+    enabled = _enabled_names(config)
+    allowed = {item.name: item for item in tools}
+    if enabled is not None:
+        allowed = {name: item for name, item in allowed.items() if name in enabled}
+
+    outputs = []
+    last = state["messages"][-1]
+    for call in getattr(last, "tool_calls", None) or []:
+        name = call.get("name") or ""
+        call_id = call.get("id") or ""
+        tool = allowed.get(name)
+        if tool is None:
+            outputs.append(
+                ToolMessage(
+                    content="That tool is turned off.",
+                    tool_call_id=call_id,
+                    name=name,
+                )
+            )
+            continue
+        try:
+            result = await asyncio.wait_for(
+                tool.ainvoke(call.get("args") or {}),
+                25,
+            )
+        except TimeoutError:
+            result = "That tool took too long. Say you could not look this up."
+        except Exception as exc:
+            result = f"Tool error: {exc}"
+        text = _tool_result_text(result)
+        if len(text) > 1800:
+            text = text[:1800].rstrip() + "\n\n[truncated]"
+        outputs.append(
+            ToolMessage(
+                content=text,
+                tool_call_id=call_id,
+                name=name,
+            )
+        )
+    return {"messages": outputs}
+
 
 def _chat_db_path() -> str:
     app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -549,11 +724,10 @@ async def _load_mcp_tools():
 
 
 async def _open_chatbot():
-    global llm_with_tools, tools
+    global tools
 
     mcp_tools = await _load_mcp_tools()
     tools = [calculator, get_stock_price, duckduckgo_search, search_constitution, *mcp_tools]
-    llm_with_tools = llm.bind_tools(tools)
 
     conn = await aiosqlite.connect(db_path)
     saver = AsyncSqliteSaver(conn)
@@ -561,10 +735,16 @@ async def _open_chatbot():
 
     graph = StateGraph(ChatState)
     graph.add_node("chat_node", chat_node)
-    graph.add_node("tools", ToolNode(tools, handle_tool_errors=True))
-    graph.add_edge(START, "chat_node")
+    graph.add_node("rag_node", rag_node)
+    graph.add_node("tools", tools_node)
+    graph.add_conditional_edges(
+        START,
+        route_turn,
+        {"chat_node": "chat_node", "rag_node": "rag_node"},
+    )
     graph.add_conditional_edges("chat_node", tools_condition)
     graph.add_edge("tools", "chat_node")
+    graph.add_edge("rag_node", END)
     return graph.compile(checkpointer=saver), saver
 
 

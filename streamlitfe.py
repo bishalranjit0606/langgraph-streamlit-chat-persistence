@@ -1,8 +1,125 @@
 import streamlit as st
-
-from langgraph_backend import chatbot, get_all_threads, make_config
 from langchain_core.messages import HumanMessage
 from langsmith import uuid7
+
+from langgraph_backend import chatbot, get_all_threads, make_config, tool_groups
+
+st.set_page_config(page_title="LangGraph Chatbot", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .stApp, [data-testid="stHeader"], [data-testid="stAppViewContainer"] {
+        background-color: #ffffff;
+        color: #1a1a1a;
+        font-family: Helvetica, Arial, sans-serif;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #f7f7f7;
+    }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+    [data-testid="stSidebar"] label {
+        color: #1a1a1a;
+    }
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"] {
+        background-color: #ffffff !important;
+        color: #1a1a1a !important;
+        border: 1px solid #cccccc !important;
+    }
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"]:hover,
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"]:focus,
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"]:active {
+        background-color: #f3f3f3 !important;
+        color: #1a1a1a !important;
+        border-color: #1a1a1a !important;
+    }
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"] p,
+    [data-testid="stSidebar"] [data-testid^="stBaseButton"] span {
+        color: #1a1a1a !important;
+    }
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"] {
+        background: #f7f7f7 !important;
+        background-color: #f7f7f7 !important;
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+        border: 1px solid #cccccc !important;
+        width: 100% !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+    }
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"]:hover,
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"]:focus,
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"]:focus-visible,
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"]:active {
+        background: #f7f7f7 !important;
+        background-color: #f7f7f7 !important;
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+        border: 1px solid #cccccc !important;
+    }
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"] p,
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"] span,
+    [class*="st-key-starter-"] [data-testid^="stBaseButton"] div {
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+        text-align: left !important;
+    }
+    [data-testid="stChatMessage"],
+    [data-testid="stChatMessageContent"] {
+        background-color: #f7f7f7 !important;
+        color: #1a1a1a !important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"],
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] span {
+        color: #1a1a1a !important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stExpander"],
+    [data-testid="stChatMessage"] [data-testid="stExpander"] details,
+    [data-testid="stChatMessage"] [data-testid="stExpander"] summary,
+    [data-testid="stChatMessage"] [data-testid="stExpanderDetails"],
+    [data-testid="stChatMessage"] pre,
+    [data-testid="stChatMessage"] code {
+        background: #f7f7f7 !important;
+        background-color: #f7f7f7 !important;
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stExpander"] p,
+    [data-testid="stChatMessage"] [data-testid="stExpander"] span,
+    [data-testid="stChatMessage"] [data-testid="stExpander"] div {
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+    }
+    [data-testid="stAppScrollToBottomContainer"],
+    [data-testid="stBottom"] > div {
+        background-color: #ffffff !important;
+    }
+    [data-testid="stChatInput"] > div {
+        background-color: #ffffff !important;
+        border: 1px solid #cccccc !important;
+    }
+    [data-testid="stChatInputTextArea"] {
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+    }
+    [data-testid="stChatInputSubmitButton"] {
+        background-color: #f3f3f3 !important;
+        color: #1a1a1a !important;
+    }
+    [data-testid="stChatInputSubmitButton"] svg {
+        fill: #1a1a1a !important;
+    }
+    section.main > div.block-container {
+        max-width: 980px;
+        padding-top: 1.25rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def generate_thread_id():
@@ -21,6 +138,35 @@ if "message_history" not in st.session_state:
 
 # Sidebar
 st.sidebar.title("LangGraph Chatbot")
+
+mode_label = st.sidebar.radio(
+    "Mode",
+    ["General", "Constitution RAG"],
+    horizontal=True,
+    key="chat_mode",
+)
+
+if mode_label == "Constitution RAG":
+    chat_mode = "rag"
+    st.sidebar.caption("Answers only from the Constitution of Nepal.")
+    selected_tools = []
+else:
+    chat_mode = "general"
+    st.sidebar.caption("Answers directly, or uses the tools you turn on.")
+    mcp_labels = {"Time", "Weather", "Sports"}
+    grouped_tools = {"Tools": [], "MCP": []}
+    for label, names in tool_groups():
+        heading = "MCP" if label in mcp_labels else "Tools"
+        grouped_tools[heading].append((label, names))
+    selected_tools = []
+    for heading in ("Tools", "MCP"):
+        st.sidebar.subheader(heading)
+        for label, names in grouped_tools[heading]:
+            if not names:
+                st.sidebar.checkbox(label, value=False, disabled=True)
+                continue
+            if st.sidebar.checkbox(label, value=True, key=f"enable-{label}"):
+                selected_tools.extend(names)
 
 
 # Show the first question as the chat title.
@@ -55,15 +201,21 @@ TOOL_LABELS = {
 }
 
 
+def _part_text(part):
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        return str(part.get("text") or "")
+    text = getattr(part, "text", "")
+    return text if isinstance(text, str) else ""
+
+
 def message_text(content):
     if isinstance(content, str):
         return content
 
     if isinstance(content, list):
-        return "".join(
-            part if isinstance(part, str) else part.get("text", "")
-            for part in content
-        )
+        return "".join(_part_text(part) for part in content)
 
     return ""
 
@@ -192,7 +344,11 @@ for thread_id in previous_threads:
 
 
 # Same thread id goes to SQLite and to LangSmith.
-CONFIG = make_config(st.session_state["thread_id"])
+CONFIG = make_config(
+    st.session_state["thread_id"],
+    mode=chat_mode,
+    enabled_tools=selected_tools,
+)
 
 
 # Display previous messages
@@ -200,11 +356,47 @@ for message in st.session_state["message_history"]:
     show_message(message)
 
 
-# User input
-user_input = st.chat_input("Type here")
+GENERAL_STARTERS = [
+    "What is the official language of Nepal?",
+    "What is 19 * 4?",
+    "What is the weather in Kathmandu?",
+    "What time is it in Nepal?",
+    "What does the Constitution of Nepal say is the official language, what is the latest AAPL share price, and how many Nepali rupees does one share cost?",
+]
+
+RAG_STARTERS = [
+    "What is the official language of Nepal?",
+    "Who is the Head of State of Nepal?",
+    "What is the national animal of Nepal?",
+    "What is the national flower of Nepal?",
+    "Where is the capital of Nepal?",
+    "What happens if a law conflicts with the Constitution?",
+]
+
+
+# Empty chats offer questions. A click sends the same way as the input box.
+starter_slot = st.empty()
+picked_question = None
+if not st.session_state["message_history"]:
+    questions = RAG_STARTERS if chat_mode == "rag" else GENERAL_STARTERS
+    with starter_slot.container():
+        for index, question in enumerate(questions):
+            if st.button(
+                question,
+                key=f"starter-{chat_mode}-{index}",
+                width="stretch",
+                wrap=True,
+            ):
+                picked_question = question
+
+
+# Always register the input. A starter click must not skip it.
+typed_question = st.chat_input("Type here")
+user_input = picked_question or typed_question
 
 
 if user_input:
+    starter_slot.empty()
 
     # Save user message
     st.session_state["message_history"].append(
@@ -326,7 +518,7 @@ if user_input:
             if not answer.strip():
                 answer = "I could not finish that reply. Please try again."
                 show_answer(answer)
-        except Exception:
+        except Exception as exc:
             for item in running_tools.values():
                 if not item["done"]:
                     item["status"].update(
@@ -334,7 +526,13 @@ if user_input:
                         state="error",
                         expanded=False,
                     )
-            answer = "Sorry, that request failed. Please try again."
+            failed = ", ".join(item["label"] for item in running_tools.values())
+            if type(exc).__name__ == "RateLimitError":
+                answer = "The model is busy right now. Please try that question again."
+            elif failed:
+                answer = f"Sorry, {failed} failed. Please try again."
+            else:
+                answer = "Sorry, that request failed. Please try again."
             show_answer(answer)
 
 
