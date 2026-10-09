@@ -5,18 +5,14 @@ from langsmith import uuid7
 st.set_page_config(page_title="LangGraph Chatbot", layout="wide")
 
 try:
-    from langgraph_backend import (
-        chatbot,
-        get_all_threads,
-        make_config,
-        startup_error,
-        tool_groups,
-    )
+    import langgraph_backend
+    from langgraph_backend import chatbot, get_all_threads, make_config, tool_groups
 except Exception as exc:
     st.error("The chatbot could not start. " + type(exc).__name__ + ": " + str(exc))
     st.stop()
 
-_start_problem = startup_error()
+_start_fn = getattr(langgraph_backend, "startup_error", None)
+_start_problem = _start_fn() if _start_fn else None
 if _start_problem is not None:
     st.error(
         "The chatbot could not start. "
