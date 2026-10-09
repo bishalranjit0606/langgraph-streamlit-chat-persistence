@@ -2,9 +2,29 @@ import streamlit as st
 from langchain_core.messages import HumanMessage
 from langsmith import uuid7
 
-from langgraph_backend import chatbot, get_all_threads, make_config, tool_groups
-
 st.set_page_config(page_title="LangGraph Chatbot", layout="wide")
+
+try:
+    from langgraph_backend import (
+        chatbot,
+        get_all_threads,
+        make_config,
+        startup_error,
+        tool_groups,
+    )
+except Exception as exc:
+    st.error("The chatbot could not start. " + type(exc).__name__ + ": " + str(exc))
+    st.stop()
+
+_start_problem = startup_error()
+if _start_problem is not None:
+    st.error(
+        "The chatbot could not start. "
+        + type(_start_problem).__name__
+        + ": "
+        + str(_start_problem)
+    )
+    st.stop()
 
 st.markdown(
     """

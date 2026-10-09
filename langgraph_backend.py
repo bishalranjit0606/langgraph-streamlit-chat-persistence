@@ -1,14 +1,23 @@
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import START, StateGraph
 from typing import TypedDict, Annotated
 
-from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_openrouter import ChatOpenRouter
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import tools_condition
+try:
+    from langgraph.prebuilt import tools_condition
+except ImportError:
+
+    def tools_condition(state):
+        messages = state.get("messages") if isinstance(state, dict) else state
+        last = messages[-1] if messages else None
+        if getattr(last, "tool_calls", None):
+            return "tools"
+        return "__end__"
 
 import ast
 import asyncio
@@ -24,7 +33,10 @@ import urllib.parse
 import aiosqlite
 import httpx
 from dotenv import load_dotenv
-from langchain_mcp_adapters.client import MultiServerMCPClient
+try:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+except ImportError:
+    MultiServerMCPClient = None
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -587,6 +599,8 @@ def _tool_result_text(result) -> str:
 
 
 async def tools_node(state: ChatState, config: RunnableConfig):
+    from langchain_core.messages import ToolMessage
+
     enabled = _enabled_names(config)
     allowed = {item.name: item for item in tools}
     if enabled is not None:
@@ -712,12 +726,22 @@ def _mcp_servers():
 async def _load_mcp_tools():
     global _mcp
 
+    if MultiServerMCPClient is None:
+        return []
+
     servers = _mcp_servers()
-    _mcp = MultiServerMCPClient(servers, tool_name_prefix=True)
+    try:
+        _mcp = MultiServerMCPClient(servers, tool_name_prefix=True)
+    except Exception as exc:
+        print(f"Skipped MCP: {exc}", file=sys.stderr)
+        return []
+
     found = []
     for name in servers:
         try:
-            found.extend(await _mcp.get_tools(server_name=name))
+            found.extend(
+                await asyncio.wait_for(_mcp.get_tools(server_name=name), 20)
+            )
         except Exception as exc:
             print(f"Skipped MCP server {name}: {exc}", file=sys.stderr)
     return found
@@ -744,22 +768,28 @@ async def _open_chatbot():
     )
     graph.add_conditional_edges("chat_node", tools_condition)
     graph.add_edge("tools", "chat_node")
-    graph.add_edge("rag_node", END)
+    graph.add_edge("rag_node", "__end__")
     return graph.compile(checkpointer=saver), saver
 
 
-_compiled, checkpointer = _run(_open_chatbot())
+_compiled = None
+checkpointer = None
+_startup_error = None
 
 
 class _Chatbot:
     # Streamlit stays synchronous. These methods run the async graph.
 
     def stream(self, inputs, config, stream_mode="messages"):
+        if _startup_error is not None:
+            raise _startup_error
         return _iter_async(
             lambda: _compiled.astream(inputs, config, stream_mode=stream_mode)
         )
 
     def get_state(self, config):
+        if _startup_error is not None:
+            raise _startup_error
         return _run(_compiled.aget_state(config))
 
 
@@ -767,6 +797,9 @@ chatbot = _Chatbot()
 
 
 def get_all_threads():
+    if _startup_error is not None or checkpointer is None:
+        return []
+
     async def _threads():
         await checkpointer.setup()
         query = """
@@ -780,3 +813,17 @@ def get_all_threads():
         return [row[0] for row in rows]
 
     return _run(_threads())
+
+
+def startup_error():
+    return _startup_error
+
+
+try:
+    _compiled, checkpointer = _run(_open_chatbot())
+except Exception as exc:
+    _startup_error = exc
+    print(
+        f"Chatbot startup failed: {type(exc).__name__}: {exc}",
+        file=sys.stderr,
+    )
