@@ -10,7 +10,22 @@ PDF_PATH = os.path.join(
     APP_DIR,
     "Constitution of Nepal (2nd amd. English)_xf33zb3.pdf",
 )
-INDEX_DIR = os.path.join(APP_DIR, "faiss_constitution")
+
+
+def _index_dir():
+    # Community Cloud keeps the repo in /mount/src, and that folder is read-only.
+    if APP_DIR.startswith("/mount/src"):
+        data_dir = os.path.join(os.path.expanduser("~"), ".langgraph-chat")
+        os.makedirs(data_dir, exist_ok=True)
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ.setdefault("HF_HOME", cache_dir)
+        os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
+        return os.path.join(data_dir, "faiss_constitution")
+    return os.path.join(APP_DIR, "faiss_constitution")
+
+
+INDEX_DIR = _index_dir()
 
 # MiniLM embeds about 256 tokens. Keep chunks under that limit.
 CHUNK_SIZE = 700
@@ -82,6 +97,7 @@ def get_vectorstore():
         raise RuntimeError("No text found in the constitution PDF.")
 
     _vectorstore = FAISS.from_documents(chunks, embeddings)
+    os.makedirs(INDEX_DIR, exist_ok=True)
     _vectorstore.save_local(INDEX_DIR)
     return _vectorstore
 

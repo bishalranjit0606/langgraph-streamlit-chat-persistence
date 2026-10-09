@@ -549,8 +549,6 @@ async def chat_node(state: ChatState, config: RunnableConfig):
 
 
 async def rag_node(state: ChatState, config: RunnableConfig):
-    from constitution_rag import format_passages, retrieve
-
     question = ""
     for message in reversed(state["messages"]):
         if getattr(message, "type", "") == "human":
@@ -558,6 +556,8 @@ async def rag_node(state: ChatState, config: RunnableConfig):
             break
 
     try:
+        from constitution_rag import format_passages, retrieve
+
         docs = await asyncio.to_thread(retrieve, _constitution_query(question))
     except Exception as exc:
         passages = f"Could not search the constitution: {exc}"
