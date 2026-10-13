@@ -54,6 +54,34 @@ st.markdown(
     [data-testid="stSidebar"] [data-testid^="stBaseButton"] span {
         color: #1a1a1a !important;
     }
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stExpandSidebarButton"] {
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stSidebarCollapseButton"] [data-testid^="stBaseButton"],
+    [data-testid="stExpandSidebarButton"] {
+        background-color: #f7f7f7 !important;
+        color: #1a1a1a !important;
+        border: 1px solid #8a8a8a !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stSidebarCollapseButton"] svg,
+    [data-testid="stExpandSidebarButton"] svg,
+    [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
+    [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"] {
+        fill: #1a1a1a !important;
+        color: #1a1a1a !important;
+        -webkit-text-fill-color: #1a1a1a !important;
+    }
+    [data-testid="stSidebarCollapseButton"] [data-testid^="stBaseButton"]:hover,
+    [data-testid="stSidebarCollapseButton"] [data-testid^="stBaseButton"]:focus,
+    [data-testid="stExpandSidebarButton"]:hover,
+    [data-testid="stExpandSidebarButton"]:focus {
+        background-color: #e4e4e4 !important;
+        color: #1a1a1a !important;
+        border-color: #1a1a1a !important;
+    }
     [class*="st-key-starter-"] [data-testid^="stBaseButton"] {
         background: #f7f7f7 !important;
         background-color: #f7f7f7 !important;
